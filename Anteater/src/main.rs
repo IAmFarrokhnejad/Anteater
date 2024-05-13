@@ -1,11 +1,10 @@
-use std:env;
-use std::io::{Self, Write};
-use std::net::{IpAddr, TcpStram}; //TcpStram allows us to create a TCP stream
-use std::str::FromStr;
+use std::env;
+use std::io::{self, Write};
+use std::net::{IpAddr, TcpStream};
 use std::process;
-use std::sync::mpsc::{Sender, channel}; //This and the library below allow multi-threaded programming
+use std::str::FromStr;
+use std::sync::mpsc::{channel, Sender};
 use std::thread;
-
 
 const MAX: u16 = 65535; //maximum sniffable port
 
@@ -14,57 +13,59 @@ struct Arguments
 {
     flag: String,
     ipaddr: IpAddr,
-    threads: u16;
+    threads: u16,
 }
 
 //Implementation block
-impl 
-{
-    fn new(args: &[String]) -> Result<Arguments, &'static str>
-    {//checking for the length of the argument
-        if args.len() < 2
-        {   return Err("Not enough arguments!");}
-        else if args.len() > 4
-        {   Return Err("Too many arguments!");}
-    }
-    let f = args[1].clone();
-    if let Ok(ipaddr) = IpAddr::from_str(&f)
-    {
-        return Ok(Arguments {flag: String::from(""), ipaddr, threads: 4});
-    }
-    else
-    {
-        let flag = args[1].clone();
-        if flag.contains("-h") || flag.contains("-help") && args.len() == 2
-        {
-            println!("Usage: -j to select the number of threads \r\n -h or -help to show this help message");
-            return Err("help");
+impl Arguments {
+    fn new(args: &[String]) -> Result<Arguments, &'static str> {
+        if args.len() < 2 {
+            return Err("not enough arguments");
+        } else if args.len() > 4 {
+            return Err("too many arguments");
         }
-        else if flag.contains("-h") || flag.contains("-help")
-        {   return Err("Too many arguments!");}
-        else if flag.contains("-j")
-        {
-            let ipaddr = match IpAddr::from_str(&args[3])
-            {
-                Ok(s) =>s,
-                Err(_) => return Err("Invalid ip address! Ip address must either be IPv4 or Ipv6.")
-            };
-            let threads = match args[2].parse::<u16>()
-            {
-                Ok(s) =>s,
-                Err(_) => return Err("Error: Failed to parse the thread nmber.")
-            };
-            return Ok(Arguments{threads, flag, ipaddr});
+        let f = args[1].clone();
+        if let Ok(ipaddr) = IpAddr::from_str(&f) {
+            return Ok(Arguments {
+                flag: String::from(""),
+                ipaddr,
+                threads: 4,
+            });
+        } else {
+            let flag = args[1].clone();
+            if flag.contains("-h") || flag.contains("-help") && args.len() == 2 {
+                println!(
+                    "Usage: -j to select how many threads you want
+                \n\r       -h or -help to show this help message"
+                );
+                return Err("help");
+            } else if flag.contains("-h") || flag.contains("-help") {
+                return Err("too many arguments");
+            } else if flag.contains("-j") {
+                let ipaddr = match IpAddr::from_str(&args[3]) {
+                    Ok(s) => s,
+                    Err(_) => return Err("not a valid IPADDR; must be IPv4 or IPv6"),
+                };
+                let threads = match args[2].parse::<u16>() {
+                    Ok(s) => s,
+                    Err(_) => return Err("failed to parse thread number"),
+                };
+                return Ok(Arguments {
+                    threads,
+                    flag,
+                    ipaddr,
+                });
+            } else {
+                return Err("invalid syntax");
+            }
         }
-        else
-        {   return Err("Invalid syntax!");}
-        
     }
 }
 
+
 fn scan(tx: Sender<u16>, start_port: u16, addr: IpAddr, num_threads: u16)
 {
-    let mut port: u16 = start_port: u16 = start_port +1;
+    let mut port: u16 = start_port +1;
     loop
     {
         match TcpStream::connect((addr, port))
@@ -130,6 +131,8 @@ fn main()
         out.push(p);
     }
 
+    for v in  out
+    {
     println!("{} is open", v);
-
+    }
 }
