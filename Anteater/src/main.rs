@@ -1,65 +1,48 @@
-use std::env;
 use std::io::{self, Write};
-use std::net::{IpAddr, TcpStream};
-use std::process;
-use std::str::FromStr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::mpsc::{channel, Sender};
-use std::thread;
+use tokio::net::TcpStream;
+use tokio::task;
+
+use bpaf::Bpaf;
 
 const MAX: u16 = 65535; //maximum sniffable port
 
+//Since the user is able to specify an address that can potentially fail, we'll have a fallback address for the sniffer to fallback to.
+const IPFALLBACK: IpAddr = IpAddr::V4(Ipv4Addr::new(a:127, b:0, c:0, d:1));
 
-struct Arguments
-{
-    flag: String,
-    ipaddr: IpAddr,
-    threads: u16,
+// CLI Arguments.
+#[derive(Debug, Clone, Bpaf)]
+#[bpaf(options)]
+pub struct Arguments {
+    // Address argument.  Accepts -a and --address and an IpAddr type. Falls back to the above constant.
+    #[bpaf(long, short, argument("Address"), fallback(IPFALLBACK))]
+    /// The address that you want to sniff.  Must be a valid ipv4 address.  Falls back to 127.0.0.1
+    pub address: IpAddr,
+    #[bpaf(
+        long("start"),
+        short('s'),
+        guard(start_port_guard, "Must be greater than 0"),
+        fallback(1u16)
+    )]
+    /// The start port for the sniffer. (must be greater than 0)
+    pub start_port: u16,
+    #[bpaf(
+        long("end"),
+        short('e'),
+        guard(end_port_guard, "Must be less than or equal to 65535"),
+        fallback(MAX)
+    )]
+    /// The end port for the sniffer. (must be less than or equal to 65535)
+    pub end_port: u16,
 }
 
-//Implementation block
-impl Arguments {
-    fn new(args: &[String]) -> Result<Arguments, &'static str> {
-        if args.len() < 2 {
-            return Err("not enough arguments");
-        } else if args.len() > 4 {
-            return Err("too many arguments");
-        }
-        let f = args[1].clone();
-        if let Ok(ipaddr) = IpAddr::from_str(&f) {
-            return Ok(Arguments {
-                flag: String::from(""),
-                ipaddr,
-                threads: 4,
-            });
-        } else {
-            let flag = args[1].clone();
-            if flag.contains("-h") || flag.contains("-help") && args.len() == 2 {
-                println!(
-                    "Usage: -j to select how many threads you want
-                \n\r       -h or -help to show this help message"
-                );
-                return Err("help");
-            } else if flag.contains("-h") || flag.contains("-help") {
-                return Err("too many arguments");
-            } else if flag.contains("-j") {
-                let ipaddr = match IpAddr::from_str(&args[3]) {
-                    Ok(s) => s,
-                    Err(_) => return Err("not a valid IPADDR; must be IPv4 or IPv6"),
-                };
-                let threads = match args[2].parse::<u16>() {
-                    Ok(s) => s,
-                    Err(_) => return Err("failed to parse thread number"),
-                };
-                return Ok(Arguments {
-                    threads,
-                    flag,
-                    ipaddr,
-                });
-            } else {
-                return Err("invalid syntax");
-            }
-        }
-    }
+fn start_port_guard(input: &u16) -> bool {
+    *input > 0
+}
+
+fn end_port_guard(input: &u16) -> bool {
+    *input <= MAX
 }
 
 

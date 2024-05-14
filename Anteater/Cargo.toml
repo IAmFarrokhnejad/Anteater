@@ -1,6 +1,8 @@
 [package]
 name = "Anteater"
-version = "0.1.0"
+version = "0.2.1"
 edition = "2021"
 
 [dependencies]
+tokio ={ version = "1", features = ["full"]}
+bpaf = {version = "0.7", features = ["derive"]}
