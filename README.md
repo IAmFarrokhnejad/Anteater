@@ -1,2 +1,2 @@
 # Anteater
- A packet sniffer
+ A port sniffer
