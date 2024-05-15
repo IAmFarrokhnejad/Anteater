@@ -1,2 +1,2 @@
 # Anteater
- A port sniffer
+ A port sniffer built using rust.
