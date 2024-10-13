@@ -15,10 +15,13 @@ use std::collections::HashMap;
 use tokio::io::AsyncReadExt;
 use std::time::Instant;
 use pnet::datalink;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 const MAX: u16 = 65535;
 const IPFALLBACK: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 const RATE_LIMIT_INTERVAL: Duration = Duration::from_millis(100);
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
@@ -80,6 +83,9 @@ pub struct Arguments {
     )]
     pub timeout: u64,
     
+    #[bpaf(long("verbose"), short('v'))]
+    pub verbose: bool,
+
     #[bpaf(
         long("concurrency"),
         short('c'),
@@ -137,7 +143,7 @@ async fn scan_tcp(ip: IpAddr, port: u16, timeout_duration: u64, grab_banner: boo
                     stream.read(&mut buffer)
                 ).await {
                     if n > 0 {
-                        banner = String::from_utf8_lossy(&buffer[..n]).to_string().into();
+                        banner = Some(String::from_utf8_lossy(&buffer[..n]).to_string());
                     }
                 }
             }
@@ -152,7 +158,7 @@ async fn scan_tcp(ip: IpAddr, port: u16, timeout_duration: u64, grab_banner: boo
                 latency: start_time.elapsed().as_millis() as u64,
             }
         },
-        _ => ScanResult {
+        Ok(Err(_)) => ScanResult {
             ip,
             port,
             protocol: Protocol::TCP,
@@ -161,8 +167,17 @@ async fn scan_tcp(ip: IpAddr, port: u16, timeout_duration: u64, grab_banner: boo
             banner: None,
             latency: 0,
         },
+        Err(_) => ScanResult {
+            ip,
+            port,
+            protocol: Protocol::TCP,
+            state: PortState::Filtered,
+            service: None,
+            banner: None,
+            latency: 0,
+        },
     }
-}
+} 
 
 async fn scan_udp(ip: IpAddr, port: u16, timeout_duration: u64) -> ScanResult {
     let start_time = Instant::now();
@@ -293,7 +308,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opts = arguments().run();
     
     // Validate and get network interface
-    let interface = get_interface(opts.interface)?;
+    let interface = get_interface(opts.interface.clone())?;
     println!("Using network interface: {}", interface);
     
     // Resolve targets
@@ -309,6 +324,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     println!("Starting scan...");
     
+    let estimated_time = estimate_scan_time(&targets, opts.start_port, opts.end_port, opts.scan_udp, opts.concurrency);
+    println!("Estimated scan time: {:?}", estimated_time);
+    
     let scan_futures = targets.iter().flat_map(|&ip| {
         (opts.start_port..=opts.end_port).flat_map(move |port| {
             let mut futures = vec![];
@@ -317,10 +335,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let tcp_future = {
                 let tx = tx.clone();
                 let rate_limiter = Arc::clone(&rate_limiter);
+                let opts = opts.clone();
                 async move {
                     rate_limiter.acquire().await;
                     let result = scan_tcp(ip, port, opts.timeout, opts.grab_banners).await;
-                    tx.send(result).unwrap_or_else(|e| eprintln!("Failed to send result: {}", e));
+                    if opts.verbose || matches!(result.state, PortState::Open) {
+                        tx.send(result).unwrap_or_else(|e| eprintln!("Failed to send result: {}", e));
+                    }
                 }
             };
             futures.push(tcp_future);
@@ -330,10 +351,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let udp_future = {
                     let tx = tx.clone();
                     let rate_limiter = Arc::clone(&rate_limiter);
+                    let opts = opts.clone();
                     async move {
                         rate_limiter.acquire().await;
                         let result = scan_udp(ip, port, opts.timeout).await;
-                        tx.send(result).unwrap_or_else(|e| eprintln!("Failed to send result: {}", e));
+                        if opts.verbose || matches!(result.state, PortState::Open) {
+                            tx.send(result).unwrap_or_else(|e| eprintln!("Failed to send result: {}", e));
+                        }
                     }
                 };
                 futures.push(udp_future);
@@ -342,6 +366,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             futures
         })
     });
+
+    let progress = Arc::new(Mutex::new(0));
+    let total_scans = targets.len() * (opts.end_port - opts.start_port + 1) as usize * if opts.scan_udp { 2 } else { 1 };
+
+    stream::iter(scan_futures)
+        .for_each_concurrent(opts.concurrency, |future| {
+            let progress = Arc::clone(&progress);
+            async move {
+                future.await;
+                let mut count = progress.lock().await;
+                *count += 1;
+                if *count % 100 == 0 || *count == total_scans {
+                    print!("\rProgress: {:.2}% ({}/{})", (*count as f64 / total_scans as f64) * 100.0, *count, total_scans);
+                    io::stdout().flush().unwrap();
+                }
+            }
+        })
+        .await;
+
+    println!("\nScan completed.");
+    
+    drop(tx);
+    
+    let results: Vec<ScanResult> = rx.into_iter().collect();
+    
+    // Process and output results
+    output_results(&results, &opts)?;
+    
+    Ok(())
+}
+
     
     stream::iter(scan_futures)
         .buffer_unordered(opts.concurrency)
@@ -415,14 +470,14 @@ impl RateLimiter {
             loop {
                 interval.tick().await;
                 let mut tokens = tokens_clone.lock().await;
-                *tokens = rate;
+                *tokens = std::cmp::min(*tokens + rate / 10, rate);
             }
         });
         
         limiter
     }
     
-   async fn acquire(&self) {
+    async fn acquire(&self) {
         loop {
             let mut tokens = self.tokens.lock().await;
             if *tokens > 0 {
